@@ -73,13 +73,16 @@ def preprocess_document(raw_text: str, filepath: str) -> Dict[str, Any]:
 
     for line in lines:
         if not header_done:
-            # Parse metadata từ các dòng "Key: Value"
-            match = re.match(r"^([\w\s]+):\s*(.*)$", line)
-            if match:
-                key = match.group(1).strip().lower().replace(" ", "_")
-                val = match.group(2).strip()
-                if key in metadata:
-                    metadata[key] = val
+            # TODO: Parse metadata từ các dòng "Key: Value"
+            # Ví dụ: "Source: policy/refund-v4.pdf" → metadata["source"] = "policy/refund-v4.pdf"
+            if line.startswith("Source:"):
+                metadata["source"] = line.replace("Source:", "").strip()
+            elif line.startswith("Department:"):
+                metadata["department"] = line.replace("Department:", "").strip()
+            elif line.startswith("Effective Date:"):
+                metadata["effective_date"] = line.replace("Effective Date:", "").strip()
+            elif line.startswith("Access:"):
+                metadata["access"] = line.replace("Access:", "").strip()
             elif line.startswith("==="):
                 # Gặp section heading đầu tiên → kết thúc header
                 header_done = True
@@ -92,12 +95,9 @@ def preprocess_document(raw_text: str, filepath: str) -> Dict[str, Any]:
 
     cleaned_text = "\n".join(content_lines)
 
-    # Thêm bước normalize text
-    # Chuẩn hóa khoảng trắng ngang (spaces, tabs) thừa
-    cleaned_text = re.sub(r"[ \t]+", " ", cleaned_text)
-    # Rút gọn khoảng trống dư thừa, max 2 dòng trống liên tiếp
-    cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text)
-    cleaned_text = cleaned_text.strip()
+    # TODO: Thêm bước normalize text nếu cần
+    # Gợi ý: bỏ ký tự đặc biệt thừa, chuẩn hóa dấu câu
+    cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text)  # max 2 dòng trống liên tiếp
 
     return {
         "text": cleaned_text,
