@@ -22,10 +22,44 @@ Definition of Done Sprint 3:
 """
 
 import os
-from typing import List, Dict, Any, Optional, Tuple
+import json
+from typing import List, Dict, Any
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Lazy-initialized singletons — avoid connecting at import time
+_openai_client = None
+_chroma_collection = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _openai_client
+
+
+def _get_collection():
+    """Return (and cache) the ChromaDB collection built by index.py."""
+    global _chroma_collection
+    if _chroma_collection is None:
+        import chromadb
+        from index import CHROMA_DB_DIR
+        client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+        _chroma_collection = client.get_collection("rag_lab")
+    return _chroma_collection
+
+
+def _get_embedding(text: str) -> List[float]:
+    """Embed text using the same model as index.py (text-embedding-3-small)."""
+    client = _get_openai_client()
+    response = client.embeddings.create(
+        input=text,
+        model="text-embedding-3-small",
+    )
+    return response.data[0].embedding
 
 # =============================================================================
 # CẤU HÌNH
@@ -76,10 +110,25 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]
         # Lưu ý: distances trong ChromaDB cosine = 1 - similarity
         # Score = 1 - distance
     """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement retrieve_dense().\n"
-        "Tham khảo comment trong hàm để biết cách query ChromaDB."
+    collection = _get_collection()
+    query_embedding = _get_embedding(query)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
     )
+    chunks = []
+    for doc, meta, dist in zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0],
+    ):
+        chunks.append({
+            "text": doc,
+            "metadata": meta,
+            "score": 1.0 - dist,   # ChromaDB cosine distance → similarity
+        })
+    return chunks
 
 
 # =============================================================================
@@ -109,10 +158,28 @@ def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any
         scores = bm25.get_scores(tokenized_query)
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     """
-    # TODO Sprint 3: Implement BM25 search
-    # Tạm thời return empty list
-    print("[retrieve_sparse] Chưa implement — Sprint 3")
-    return []
+    from rank_bm25 import BM25Okapi
+
+    collection = _get_collection()
+    all_results = collection.get(include=["documents", "metadatas"])
+    all_docs: List[str] = all_results["documents"]
+    all_metas: List[Dict] = all_results["metadatas"]
+
+    tokenized_corpus = [doc.lower().split() for doc in all_docs]
+    bm25 = BM25Okapi(tokenized_corpus)
+    scores = bm25.get_scores(query.lower().split())
+
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    max_score = scores[top_indices[0]] if top_indices and scores[top_indices[0]] > 0 else 1.0
+
+    return [
+        {
+            "text": all_docs[i],
+            "metadata": all_metas[i],
+            "score": float(scores[i] / max_score),  # normalize to [0, 1]
+        }
+        for i in top_indices
+    ]
 
 
 # =============================================================================
@@ -148,10 +215,30 @@ def retrieve_hybrid(
     - Corpus có cả câu tự nhiên VÀ tên riêng, mã lỗi, điều khoản
     - Query như "Approval Matrix" khi doc đổi tên thành "Access Control SOP"
     """
-    # TODO Sprint 3: Implement hybrid RRF
-    # Tạm thời fallback về dense
-    print("[retrieve_hybrid] Chưa implement RRF — fallback về dense")
-    return retrieve_dense(query, top_k)
+    dense_results = retrieve_dense(query, top_k=top_k)
+    sparse_results = retrieve_sparse(query, top_k=top_k)
+
+    # Reciprocal Rank Fusion: RRF(doc) = Σ weight * 1/(60 + rank)
+    rrf: Dict[str, float] = {}
+    doc_map: Dict[str, Dict] = {}
+
+    for rank, chunk in enumerate(dense_results):
+        key = chunk["text"]
+        rrf[key] = rrf.get(key, 0.0) + dense_weight / (60 + rank + 1)
+        doc_map[key] = chunk
+
+    for rank, chunk in enumerate(sparse_results):
+        key = chunk["text"]
+        rrf[key] = rrf.get(key, 0.0) + sparse_weight / (60 + rank + 1)
+        doc_map[key] = chunk
+
+    sorted_keys = sorted(rrf, key=lambda k: rrf[k], reverse=True)[:top_k]
+    results = []
+    for key in sorted_keys:
+        chunk = dict(doc_map[key])
+        chunk["score"] = rrf[key]
+        results.append(chunk)
+    return results
 
 
 # =============================================================================
@@ -189,9 +276,19 @@ def rerank(
     - Dense/hybrid trả về nhiều chunk nhưng có noise
     - Muốn chắc chắn chỉ 3-5 chunk tốt nhất vào prompt
     """
-    # TODO Sprint 3: Implement rerank
-    # Tạm thời trả về top_k đầu tiên (không rerank)
-    return candidates[:top_k]
+    from sentence_transformers import CrossEncoder
+
+    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    pairs = [[query, chunk["text"]] for chunk in candidates]
+    scores = model.predict(pairs)
+
+    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+    results = []
+    for chunk, score in ranked[:top_k]:
+        chunk = dict(chunk)
+        chunk["rerank_score"] = float(score)
+        results.append(chunk)
+    return results
 
 
 # =============================================================================
@@ -224,9 +321,45 @@ def transform_query(query: str, strategy: str = "expansion") -> List[str]:
     - Decomposition: query hỏi nhiều thứ một lúc
     - HyDE: query mơ hồ, search theo nghĩa không hiệu quả
     """
-    # TODO Sprint 3: Implement query transformation
-    # Tạm thời trả về query gốc
-    return [query]
+    client = _get_openai_client()
+
+    if strategy == "hyde":
+        # Hypothetical Document Embedding: generate a fake answer, embed that instead
+        prompt = (
+            f"Write a short passage (2-3 sentences) that would directly answer "
+            f"this question: '{query}'\nOutput only the passage text."
+        )
+        response = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=200,
+        )
+        return [response.choices[0].message.content.strip()]
+
+    if strategy == "decomposition":
+        prompt = (
+            f"Break down this complex query into 2-3 simpler sub-queries: '{query}'\n"
+            "Output as a JSON array of strings only, no explanation."
+        )
+    else:  # expansion (default)
+        prompt = (
+            f"Given the query: '{query}'\n"
+            "Generate 2-3 alternative phrasings or related terms in the same language as the query.\n"
+            "Output as a JSON array of strings only, no explanation."
+        )
+
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=200,
+    )
+    try:
+        alternatives = json.loads(response.choices[0].message.content.strip())
+        return [query] + alternatives   # always keep the original
+    except (json.JSONDecodeError, TypeError):
+        return [query]
 
 
 # =============================================================================
@@ -316,10 +449,14 @@ def call_llm(prompt: str) -> str:
 
     Lưu ý: Dùng temperature=0 hoặc thấp để output ổn định cho evaluation.
     """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement call_llm().\n"
-        "Chọn Option A (OpenAI) hoặc Option B (Gemini) trong TODO comment."
+    client = _get_openai_client()
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,      # stable output for evaluation
+        max_tokens=512,
     )
+    return response.choices[0].message.content
 
 
 def rag_answer(
