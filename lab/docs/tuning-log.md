@@ -7,35 +7,43 @@
 
 ## Baseline (Sprint 2)
 
-**Ngày:** ___________  
+**Ngày:** ____13/4/2026_____  
 **Config:**
 ```
 retrieval_mode = "dense"
-chunk_size = _____ tokens
-overlap = _____ tokens
+chunk_size = _____400 tokens
+overlap = _____80 tokens
 top_k_search = 10
 top_k_select = 3
 use_rerank = False
-llm_model = _____
+llm_model = _____gpt-4o-mini
 ```
 
 **Scorecard Baseline:**
 | Metric | Average Score |
 |--------|--------------|
-| Faithfulness | ? /5 |
-| Answer Relevance | ? /5 |
-| Context Recall | ? /5 |
-| Completeness | ? /5 |
+| Faithfulness | 4.40 /5 |
+| Answer Relevance | 4.70 /5 |
+| Context Recall | 5 /5 |
+| Completeness |3.8 /5 |
 
 **Câu hỏi yếu nhất (điểm thấp):**
-> TODO: Liệt kê 2-3 câu hỏi có điểm thấp nhất và lý do tại sao.
-> Ví dụ: "q07 (Approval Matrix) - context recall = 1/5 vì dense bỏ lỡ alias."
+Câu [q09]: ERR-403-AUTH là lỗi gì và cách xử lý?
+
+Điểm: Faithful: 5 | Relevant: 5 | Recall: None | Complete: 2
+Phân tích vì sao thấp: Đây là câu hỏi mẹo (Out-of-Domain), file tài liệu công ty không hề có mã lỗi này (Context Recall là None do expected_source bị bõ trống). Tuy nhiên, LLM lại không biết nói "Tôi không biết / Không đủ dữ liệu", mà lại bị "ảo giác" (Hallucination) dùng kiến thức lập trình ngoài internet để tự chém gió ra câu trả lời. Câu trả lời đó đi chệch hoàn toàn so với đáp án kỳ vọng của Eval Owner nên Completeness chỉ được 2.
+
+Câu [q07]: Approval Matrix để cấp quyền hệ thống là tài liệu nào?
+
+Điểm: Faithful: 5 | Relevant: 5 | Recall: 5 | Complete: 2
+Phân tích vì sao thấp: Hệ thống tìm đúng file, trả lời bám sát file nhưng bị rơi rụng mất các điểm ý chính so với đáp án chuẩn (expected_answer), khiến Completeness rất thấp. Nguyên nhân có thể do Top K = 3 quá ít để gom đủ tất cả các ý nghĩa (context) hoặc thuật toán Dense Retrieval lấy lên 3 đoạn bị rác/trùng lặp nên LLM không có đủ nguyên liệu để soạn ra một câu trả lời đầy đủ ý.
+
 
 **Giả thuyết nguyên nhân (Error Tree):**
 - [ ] Indexing: Chunking cắt giữa điều khoản
 - [ ] Indexing: Metadata thiếu effective_date
 - [ ] Retrieval: Dense bỏ lỡ exact keyword / alias
-- [ ] Retrieval: Top-k quá ít → thiếu evidence
+- [x] Retrieval: Top-k quá ít → thiếu evidence
 - [ ] Generation: Prompt không đủ grounding
 - [ ] Generation: Context quá dài → lost in the middle
 
