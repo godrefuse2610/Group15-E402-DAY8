@@ -22,7 +22,7 @@ llm_model = _____gpt-4o-mini
 **Scorecard Baseline:**
 | Metric | Average Score |
 |--------|--------------|
-| Faithfulness | 4.40 /5 |
+| Faithfulness | 4.50 /5 |
 | Answer Relevance | 4.70 /5 |
 | Context Recall | 5 /5 |
 | Completeness |3.8 /5 |
@@ -51,34 +51,50 @@ Phân tích vì sao thấp: Hệ thống tìm đúng file, trả lời bám sát
 
 ## Variant 1 (Sprint 3)
 
-**Ngày:** ___________  
-**Biến thay đổi:** ___________  
+**Ngày:** ______13/4/2026_____  
+**Biến thay đổi:** retrieval_mode = "hybrid"   
 **Lý do chọn biến này:**
-> TODO: Giải thích theo evidence từ baseline results.
+
 > Ví dụ: "Chọn hybrid vì q07 (alias query) và q09 (mã lỗi ERR-403) đều thất bại với dense.
 > Corpus có cả ngôn ngữ tự nhiên (policy) lẫn tên riêng/mã lỗi (ticket code, SLA label)."
 
 **Config thay đổi:**
 ```
-retrieval_mode = "hybrid"   # hoặc biến khác
+retrieval_mode = "hybrid"   
 # Các tham số còn lại giữ nguyên như baseline
 ```
 
 **Scorecard Variant 1:**
 | Metric | Baseline | Variant 1 | Delta |
 |--------|----------|-----------|-------|
-| Faithfulness | ?/5 | ?/5 | +/- |
-| Answer Relevance | ?/5 | ?/5 | +/- |
-| Context Recall | ?/5 | ?/5 | +/- |
-| Completeness | ?/5 | ?/5 | +/- |
+| Faithfulness | 4.50/5 | 4.10/5 | -0.4 |
+| Answer Relevance | 4.70/5 | 4.30/5 | -0.4 |
+| Context Recall | 5/5 | 5/5 | 0 |
+| Completeness | 3.8/5 | 3.5/5 | -0.3 |
 
 **Nhận xét:**
-> TODO: Variant 1 cải thiện ở câu nào? Tại sao?
-> Có câu nào kém hơn không? Tại sao?
+Variant 1 cải thiện ở câu nào? Tại sao?
+
+Cải thiện thực chất ở câu [q09] (ERR-403-AUTH).
+
+Bằng chứng: Ở bản Baseline, AI bị ảo giác (hallucinate) và tự bịa ra định nghĩa cho mã lỗi này (được chấm 5 điểm sai quy định). Nhưng sang bản Variant Hybrid, AI đã biết nói "Tôi không biết".
+Tại sao: Do Hybrid Search đưa lên các từ khóa nhiễu, làm loãng ngữ cảnh, khiến Generative LLM tự nhận thức được là nó không có đủ dữ kiện để bịa.
+Nghịch lý ở đây: Dù hành vi nói "không biết" là chính xác hoàn toàn cho câu hỏi Out-of-Domain này, nhưng prompt chấm điểm tự động của Eval Owner đã chấm cực kỳ gắt (Faithful 1, Relevant 1, Complete 1) vì nó không hiểu "từ chối trả lời" suy ra là Faithful. Đây là lý do chính khiến tổng điểm Variant bị kéo sập xuống.
+
+Kém hơn rõ nhất ở câu [q06] (Escalation sự cố P1 diễn ra như thế nào?)
+
+Bằng chứng: Điểm Completeness của [q06] rớt thẳng từ 5 (Baseline) xuống còn 2 (Variant 1).
+Tại sao: Thuật toán Sparse (BM25) của Hybrid cực kỳ nhạy cảm với các keyword ("Escalation", "P1"). Nó đã "kéo" nhầm một số thông báo ngẫu nhiên hoặc tài liệu phụ chứa cụm từ này lên top đầu, vô tình đạp đoạn văn bản gốc chứa sự miêu tả đầy đủ của quy trình Escalation xuống (vì top_k_select chỉ lấy cắt đúng 3 đoạn). Hậu quả là LLM không nhận được đủ mảnh ghép văn bản và trả lời thiếu hụt.
 
 **Kết luận:**
-> TODO: Variant 1 có tốt hơn baseline không?
-> Bằng chứng là gì? (điểm số, câu hỏi cụ thể)
+Variant 1 có tốt hơn baseline không?
+Bằng chứng là gì? (điểm số, câu hỏi cụ thể)
+
+Variant 1 KHÔNG tốt hơn Baseline.
+
+Bằng chứng: Tổng điểm trung bình của Variant 1 là 3.85/5, thấp hơn Baseline là 4.45/5. Cụ thể, các chỉ số Faithfulness và Answer Relevance giảm 0.4 điểm.
+
+Lý do: Mặc dù Hybrid Search đã giúp AI không bịa chuyện ở câu hỏi OOD (Out-of-Domain) [q09], nhưng nó lại làm giảm chất lượng câu trả lời ở các câu hỏi thông thường (như [q06]) do thuật toán Sparse bị nhiễu bởi từ khóa, dẫn đến việc LLM nhận được context kém chất lượng hơn và trả lời thiếu ý.
 
 ---
 

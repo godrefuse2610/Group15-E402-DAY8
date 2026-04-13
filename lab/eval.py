@@ -76,7 +76,7 @@ VARIANT_CONFIG = {
     "retrieval_mode": "hybrid",   # Hoặc "dense" nếu chỉ đổi rerank
     "top_k_search": 10,
     "top_k_select": 3,
-    "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
+    "use_rerank": False,           # Hoặc False nếu variant là hybrid không rerank
     "label": "variant_hybrid_rerank",
 }
 
