@@ -1,0 +1,42 @@
+# Báo Cáo Cá Nhân — Lab Day 08: RAG Pipeline
+
+**Họ và tên:** ____________________  
+**Vai trò trong nhóm:** Documentation Owner / Eval Support  
+**Ngày nộp:** 13/04/2026  
+**Độ dài yêu cầu:** 500–800 từ
+
+---
+
+## 1. Tôi đã làm gì trong lab này?
+
+Trong lab này tôi đóng góp chủ yếu ở Sprint 4, tập trung vào phần tài liệu hóa pipeline và tổng hợp kết quả đánh giá để nhóm có thể nộp đầy đủ deliverables. Công việc chính của tôi là đọc lại toàn bộ project, đối chiếu giữa code đang có trong `index.py`, `rag_answer.py`, `eval.py` với các file tài liệu mẫu, sau đó cập nhật `docs/architecture.md` để mô tả đúng kiến trúc thật của hệ thống thay vì chỉ giữ template. Tôi cũng hỗ trợ nhìn lại cấu hình baseline và variant, kiểm tra số chunk thực tế trong ChromaDB, rà soát metadata của từng nguồn tài liệu, và kết nối kết quả đó với phần đánh giá Sprint 4. Vai trò của tôi không phải viết thuật toán retrieval từ đầu, mà là biến phần implementation của nhóm thành tài liệu rõ ràng, có thể giải thích được khi demo và khi bị hỏi về quyết định kỹ thuật.
+
+---
+
+## 2. Điều tôi hiểu rõ hơn sau lab này
+
+Sau lab này tôi hiểu rõ hơn rằng phần documentation trong một hệ RAG không chỉ là “viết mô tả cho đẹp”, mà là một cách kiểm chứng xem nhóm có thật sự hiểu pipeline mình đang build hay không. Khi điền lại `architecture.md`, tôi thấy rõ quan hệ giữa chunking, metadata, retrieval và generation. Ví dụ, nếu chỉ ghi “dense retrieval” mà không nêu `top_k_search = 10`, `top_k_select = 3`, hoặc không nói rõ chiến lược chunking theo heading rồi mới tách paragraph, thì tài liệu sẽ không đủ để giải thích vì sao hệ thống trả lời đúng hoặc sai ở từng câu. Tôi cũng hiểu sâu hơn vai trò của metadata như `source`, `section`, `effective_date`, vì chúng không chỉ dùng để debug mà còn là nền tảng cho citation và kiểm tra freshness của câu trả lời
+
+---
+
+## 3. Điều tôi ngạc nhiên hoặc gặp khó khăn
+
+Điều khiến tôi ngạc nhiên nhất là khoảng cách giữa “code chạy được” và “repo sẵn sàng để nộp” khá lớn. Lúc đầu tôi nghĩ chỉ cần có `index.py`, `rag_answer.py`, `eval.py` là đủ, nhưng khi đọc kỹ yêu cầu Sprint 4 và rubric chấm điểm, tôi nhận ra phần tài liệu và scorecard có vai trò rất lớn trong việc chứng minh chất lượng pipeline. Khó khăn lớn nhất của tôi là phải đọc lại project theo góc nhìn của người chấm, không phải người code. Nghĩa là tôi phải kiểm tra xem thông tin nào trong docs thật sự khớp với code, số chunk nào là số thực trong database, variant nào mới đúng với cấu hình mà nhóm đang dùng. Nếu viết sai hoặc ghi theo giả định thay vì theo repo, báo cáo cá nhân và tài liệu nhóm sẽ dễ bị mâu thuẫn với phần code thực tế.
+
+---
+
+## 4. Phân tích một câu hỏi trong scorecard
+
+**Câu hỏi:** `q07` — “Approval Matrix để cấp quyền hệ thống là tài liệu nào?”
+
+**Phân tích:**
+
+Đây là câu hỏi rất thú vị vì nó không hỏi trực tiếp đúng tên tài liệu hiện tại, mà dùng alias cũ là “Approval Matrix”. Về mặt nội dung, đáp án đúng phải nối được alias này với tài liệu hiện tại là `Access Control SOP`. Nếu nhìn từ góc độ pipeline, lỗi tiềm ẩn nằm ở bước retrieval nhiều hơn generation. Nếu retriever chỉ dựa vào semantic similarity quá chung chung, hệ thống có thể lấy được những chunk nói về “approval”, “access”, “quyền hệ thống”, nhưng lại không kéo đúng đoạn mở đầu nơi tài liệu ghi rõ rằng trước đây nó có tên là “Approval Matrix for System Access”. Khi đó generation có thể trả lời thiếu hoặc trả lời mơ hồ.
+
+Theo tôi, đây là lý do hợp lý để nhóm thử variant hybrid ở Sprint 3. Hybrid retrieval giúp cân bằng giữa nghĩa ngữ cảnh và exact keyword match, đặc biệt hữu ích với alias, tên cũ hoặc cụm từ chuyên ngành. Nếu variant kéo được đúng chunk giới thiệu tài liệu, answer sẽ vừa chính xác vừa grounded hơn baseline. Câu này cho tôi thấy một bài học rõ: với RAG, nhiều câu nhìn có vẻ là “hỏi đáp tài liệu” nhưng thực chất đang test khả năng nối alias và truy hồi đúng chứng cứ hơn là khả năng viết câu trả lời đẹp.
+
+---
+
+## 5. Nếu có thêm thời gian, tôi sẽ làm gì?
+
+Nếu có thêm thời gian, tôi sẽ tiếp tục cải thiện Sprint 4 theo hai hướng. Thứ nhất là chuẩn hóa scorecard và log evaluation để mỗi lần chạy đều sinh ra kết quả dễ đối chiếu giữa baseline và variant. Thứ hai là bổ sung một phần ngắn trong tài liệu giải thích rõ từng failure mode điển hình của hệ RAG trong repo này, ví dụ alias query, out-of-domain query và thiếu evidence do top-k quá thấp. Làm vậy thì phần demo và phần bảo vệ repo sẽ chắc hơn rất nhiều.
