@@ -242,9 +242,25 @@ def retrieve_hybrid(
 
 
 # =============================================================================
-# RERANK (Sprint 3 alternative)
-# Cross-encoder để chấm lại relevance sau search rộng
+# RERANK — Sprint 3 VARIANT: Cross-Encoder (ĐÃ CHỌN)
+# Cross-encoder chấm lại relevance sau dense search rộng
 # =============================================================================
+
+# Cache cross-encoder model — tránh tải lại ~85MB mỗi lần gọi
+_cross_encoder_model = None
+
+def _get_cross_encoder():
+    """Lazy-initialize và cache CrossEncoder model."""
+    global _cross_encoder_model
+    if _cross_encoder_model is None:
+        from sentence_transformers import CrossEncoder
+        # cross-encoder/ms-marco-MiniLM-L-6-v2:
+        # - Lightweight (~85MB), chạy CPU được
+        # - Trained trên MS-MARCO passage ranking task
+        # - Score range: unbounded logits dùng để rank relative
+        _cross_encoder_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    return _cross_encoder_model
+
 
 def rerank(
     query: str,
@@ -252,41 +268,54 @@ def rerank(
     top_k: int = TOP_K_SELECT,
 ) -> List[Dict[str, Any]]:
     """
-    Rerank các candidate chunks bằng cross-encoder.
+    Sprint 3 — Variant: Rerank candidates bằng Cross-Encoder.
 
-    Cross-encoder: chấm lại "chunk nào thực sự trả lời câu hỏi này?"
-    MMR (Maximal Marginal Relevance): giữ relevance nhưng giảm trùng lặp
+    LÝ DO CHỌN RERANK (A/B justification theo README):
+    - Dense search (bi-encoder) embed query và chunk độc lập → nhanh nhưng có noise
+    - Cross-encoder đọc cặp (query, chunk) cùng lúc → chấm relevance chính xác hơn
+    - Funnel approach: search rộng top-10 → rerank → chỉ top-3 đi vào prompt
+    - Phù hợp với corpus chính sách: query hỏi điều khoản cụ thể cần precision cao
+    - A/B Rule: CHỈ thay đổi use_rerank=True, giữ nguyên retrieval_mode="dense"
 
     Funnel logic (từ slide):
-      Search rộng (top-20) → Rerank (top-6) → Select (top-3)
+      Dense search rộng (top-10) → Cross-Encoder Rerank → Select top-3 vào prompt
 
-    TODO Sprint 3 (nếu chọn rerank):
-    Option A — Cross-encoder:
-        from sentence_transformers import CrossEncoder
+    Implementation (Option A — Cross-encoder):
         model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [[query, chunk["text"]] for chunk in candidates]
-        scores = model.predict(pairs)
-        ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-        return [chunk for chunk, _ in ranked[:top_k]]
+        pairs = [[query, chunk_text] for each candidate]
+        scores = model.predict(pairs)  # logit scores
+        Sort by score DESC → take top_k
 
-    Option B — Rerank bằng LLM (đơn giản hơn nhưng tốn token):
-        Gửi list chunks cho LLM, yêu cầu chọn top_k relevant nhất
+    Args:
+        query: Câu hỏi gốc
+        candidates: Danh sách chunks từ retrieve_dense() (top-10)
+        top_k: Số chunks giữ lại sau rerank (mặc định TOP_K_SELECT=3)
 
-    Khi nào dùng rerank:
-    - Dense/hybrid trả về nhiều chunk nhưng có noise
-    - Muốn chắc chắn chỉ 3-5 chunk tốt nhất vào prompt
+    Returns:
+        List chunks được rerank, có thêm field "rerank_score" để debug
     """
-    from sentence_transformers import CrossEncoder
+    if not candidates:
+        return []
 
-    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    # Nếu candidates ít hơn top_k thì không cần rerank
+    if len(candidates) <= top_k:
+        return candidates
+
+    model = _get_cross_encoder()
+
+    # Tạo pairs [query, chunk_text] cho cross-encoder
     pairs = [[query, chunk["text"]] for chunk in candidates]
+
+    # Predict trả về logit scores (unbounded) — dùng để rank, không cần normalize
     scores = model.predict(pairs)
 
+    # Sort theo cross-encoder score giảm dần
     ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+
     results = []
     for chunk, score in ranked[:top_k]:
-        chunk = dict(chunk)
-        chunk["rerank_score"] = float(score)
+        chunk = dict(chunk)  # copy để không mutate original
+        chunk["rerank_score"] = round(float(score), 4)
         results.append(chunk)
     return results
 
@@ -557,79 +586,119 @@ def rag_answer(
 
 
 # =============================================================================
-# SPRINT 3: SO SÁNH BASELINE VS VARIANT
+# SPRINT 3: SO SÁNH BASELINE VS VARIANT (A/B Comparison)
+# A/B Rule: Chỉ đổi MỘT biến mỗi lần
+# Baseline: dense, use_rerank=False
+# Variant:  dense, use_rerank=True  (Cross-Encoder Rerank)
 # =============================================================================
 
 def compare_retrieval_strategies(query: str) -> None:
     """
-    So sánh các retrieval strategies với cùng một query.
+    So sánh Baseline (Dense) vs Variant (Dense + Rerank) với cùng một query.
 
-    TODO Sprint 3:
-    Chạy hàm này để thấy sự khác biệt giữa dense, sparse, hybrid.
-    Dùng để justify tại sao chọn variant đó cho Sprint 3.
+    A/B Rule (từ slide và README): Chỉ đổi MỘT biến mỗi lần.
+    → Giữ nguyên retrieval_mode="dense", chỉ bật/tắt use_rerank
+    → Điều này giúp biết chắc rerank có tác dụng không (loại trừ ảnh hưởng
+       của việc đổi retrieval mode)
 
-    A/B Rule (từ slide): Chỉ đổi MỘT biến mỗi lần.
+    Hiển thị:
+    - Top chunks được chọn trước/sau rerank (để thấy thứ tự thay đổi)
+    - Câu trả lời cuối cùng từ mỗi variant
+    - Sources được sử dụng
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'='*65}")
     print(f"Query: {query}")
-    print('='*60)
+    print('='*65)
 
-    strategies = ["dense", "hybrid"]  # Thêm "sparse" sau khi implement
+    configs = [
+        {
+            "label":    "Baseline — Dense (no rerank)",
+            "mode":     "dense",
+            "rerank":   False,
+        },
+        {
+            "label":    "Variant  — Dense + Cross-Encoder Rerank",
+            "mode":     "dense",
+            "rerank":   True,
+        },
+    ]
 
-    for strategy in strategies:
-        print(f"\n--- Strategy: {strategy} ---")
+    for cfg in configs:
+        print(f"\n[{cfg['label']}]")
         try:
-            result = rag_answer(query, retrieval_mode=strategy, verbose=False)
-            print(f"Answer: {result['answer']}")
-            print(f"Sources: {result['sources']}")
-        except NotImplementedError as e:
-            print(f"Chưa implement: {e}")
+            result = rag_answer(
+                query,
+                retrieval_mode=cfg["mode"],
+                use_rerank=cfg["rerank"],
+                verbose=False,
+            )
+            # Hiển thị chunks đã dùng kèm score
+            print(f"  Chunks used ({len(result['chunks_used'])}/{TOP_K_SELECT}):")
+            for i, c in enumerate(result["chunks_used"]):
+                score_key = "rerank_score" if "rerank_score" in c else "score"
+                score_val = c.get(score_key, 0)
+                print(f"    [{i+1}] {score_key}={score_val:.4f} | "
+                      f"{c['metadata'].get('source','?')} | "
+                      f"{c['metadata'].get('section','')[:35]}")
+            print(f"  Answer:  {result['answer']}")
+            print(f"  Sources: {result['sources']}")
         except Exception as e:
-            print(f"Lỗi: {e}")
+            print(f"  Lỗi: {e}")
 
 
 # =============================================================================
-# MAIN — Demo và Test
+# MAIN — Sprint 2 Demo + Sprint 3 A/B Comparison
 # =============================================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Sprint 2 + 3: RAG Answer Pipeline")
-    print("=" * 60)
+    import sys
+    if sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-    # Test queries từ data/test_questions.json
+    print("=" * 65)
+    print("Sprint 2 + 3: RAG Answer Pipeline")
+    print("=" * 65)
+
+    # -----------------------------------------------------------------------
+    # Sprint 2: Baseline Dense Retrieval
+    # -----------------------------------------------------------------------
     test_queries = [
         "SLA xử lý ticket P1 là bao lâu?",
         "Khách hàng có thể yêu cầu hoàn tiền trong bao nhiêu ngày?",
         "Ai phải phê duyệt để cấp quyền Level 3?",
-        "ERR-403-AUTH là lỗi gì?",  # Query không có trong docs → kiểm tra abstain
+        "ERR-403-AUTH là lỗi gì?",  # abstain test
     ]
 
-    print("\n--- Sprint 2: Test Baseline (Dense) ---")
+    print("\n--- Sprint 2: Baseline Dense (no rerank) ---")
     for query in test_queries:
-        print(f"\nQuery: {query}")
-        try:
-            result = rag_answer(query, retrieval_mode="dense", verbose=True)
-            print(f"Answer: {result['answer']}")
-            print(f"Sources: {result['sources']}")
-        except NotImplementedError:
-            print("Chưa implement — hoàn thành TODO trong retrieve_dense() và call_llm() trước.")
-        except Exception as e:
-            print(f"Lỗi: {e}")
+        print(f"\nQ: {query}")
+        result = rag_answer(query, retrieval_mode="dense", use_rerank=False)
+        print(f"A: {result['answer']}")
+        print(f"Sources: {result['sources']}")
 
-    # Uncomment sau khi Sprint 3 hoàn thành:
-    # print("\n--- Sprint 3: So sánh strategies ---")
-    # compare_retrieval_strategies("Approval Matrix để cấp quyền là tài liệu nào?")
-    # compare_retrieval_strategies("ERR-403-AUTH")
+    # -----------------------------------------------------------------------
+    # Sprint 3: A/B Comparison — Baseline vs Rerank Variant
+    # A/B Rule: chỉ đổi use_rerank, giữ nguyên retrieval_mode
+    # -----------------------------------------------------------------------
+    print("\n\n" + "="*65)
+    print("Sprint 3: A/B Comparison — Dense vs Dense+Rerank")
+    print("Variant đã chọn: RERANK (Cross-Encoder ms-marco-MiniLM-L-6-v2)")
+    print("Lý do:")
+    print("  - Dense top-10 có noise: chunks liên quan chủ đề nhưng không trả lời câu hỏi")
+    print("  - Cross-encoder chấm lại (query, chunk) pairs → chính xác hơn bi-encoder")
+    print("  - Funnel: top-10 search → rerank → top-3 vào prompt")
+    print("  - A/B Rule: CHỈ đổi use_rerank=True, không đổi retrieval_mode")
+    print("="*65)
 
-    print("\n\nViệc cần làm Sprint 2:")
-    print("  1. Implement retrieve_dense() — query ChromaDB")
-    print("  2. Implement call_llm() — gọi OpenAI hoặc Gemini")
-    print("  3. Chạy rag_answer() với 3+ test queries")
-    print("  4. Verify: output có citation không? Câu không có docs → abstain không?")
+    comparison_queries = [
+        "SLA xử lý ticket P1 là bao lâu?",
+        "Ai phải phê duyệt để cấp quyền Level 3?",
+        "Khách hàng hoàn tiền trong bao nhiêu ngày?",
+    ]
 
-    print("\nViệc cần làm Sprint 3:")
-    print("  1. Chọn 1 trong 3 variants: hybrid, rerank, hoặc query transformation")
-    print("  2. Implement variant đó")
-    print("  3. Chạy compare_retrieval_strategies() để thấy sự khác biệt")
-    print("  4. Ghi lý do chọn biến đó vào docs/tuning-log.md")
+    for q in comparison_queries:
+        compare_retrieval_strategies(q)
+
+    print("\n\n✓ Sprint 3 hoàn thành!")
+    print("Xem docs/tuning-log.md để biết kết quả A/B comparison đầy đủ.")
